@@ -1,2 +1,2 @@
 # nyc-taxi-mlops
-CA3 for Big Data Architecture
+MLOps pipeline for NYC Yellow Taxi fare prediction — Big Data CA3 (ATU Donegal)
