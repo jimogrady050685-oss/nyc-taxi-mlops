@@ -1,0 +1,4 @@
+# ct.yml - Continuous Training
+# Weekly schedule + manual trigger. Retrains model on the VM.
+# To be implemented
+

@@ -1,0 +1,10 @@
+# Python dependencies - to be finalized
+flask
+scikit-learn
+pandas
+numpy
+joblib
+requests
+pyarrow
+gunicorn
+

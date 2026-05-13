@@ -1,0 +1,4 @@
+# ci.yml - Continuous Integration
+# Triggers on push and PR. Runs smoke tests.
+# To be implemented
+
