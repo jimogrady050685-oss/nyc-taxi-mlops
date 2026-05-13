@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# MLOps project-specific
+models/
+*.joblib
+*.pkl
+/tmp/data/
+.env
+data/
+*.parquet
