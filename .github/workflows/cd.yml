@@ -1,4 +1,0 @@
-# cd.yml - Continuous Delivery
-# Triggers on push to main. Builds Docker image and deploys to GCP VM.
-# To be implemented
-

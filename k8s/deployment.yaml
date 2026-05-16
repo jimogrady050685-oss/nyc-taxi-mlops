@@ -1,0 +1,86 @@
+# k8s/deployment.yaml — Kubernetes Deployment for the Flask API
+# ===============================================================
+# This file matches the structure of the lecturer's student-performance
+# deployment.yaml exactly. Argo CD watches the k8s/ folder of this repo
+# and syncs any changes to this file into the Kind cluster automatically.
+#
+# Video talking point:
+#   "deployment.yaml tells Kubernetes how to run the application. One replica
+#    of the taxi-fare image, pulled from my Docker Hub repository. The
+#    container exposes port 5000 — the Flask gunicorn port. When I push a
+#    new image to Docker Hub and update this file's image tag (or use :latest
+#    with imagePullPolicy: Always), Argo CD detects the change and triggers
+#    a rolling update — Kubernetes spins up the new pod, waits for it to be
+#    healthy, then terminates the old one. Zero-downtime deployment."
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: taxi-fare
+  labels:
+    app: taxi-fare
+spec:
+  # Single replica is fine for a demo. Increase this number to scale out;
+  # Kubernetes will handle the rolling update automatically when the image
+  # tag changes — this is what the lecturer means by "using Kubernetes to
+  # its full potential" rather than just treating it as a container runner.
+  replicas: 1
+
+  selector:
+    matchLabels:
+      app: taxi-fare
+
+  template:
+    metadata:
+      labels:
+        app: taxi-fare
+    spec:
+      containers:
+        - name: taxi-fare
+          # IMPORTANT: replace YOUR_DOCKERHUB_USERNAME with your actual username
+          # The lecturer's example used "adunasweeney/student-performance:latest"
+          image: jcogrady/nyctaxi-fare:latest
+
+          # imagePullPolicy: Always forces Kubernetes to re-pull the image
+          # every time a pod starts. With :latest tag this is how Argo CD
+          # picks up new model versions after CT retraining workflow runs.
+          imagePullPolicy: Always
+
+          ports:
+            - name: http
+              containerPort: 5000   # gunicorn listens on 5000 inside the container
+              protocol: TCP
+
+          # Resource limits — Kind clusters have ~4 GB total. These are sensible
+          # ceilings that prevent one pod from starving the others.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+
+          # Liveness probe — Kubernetes restarts the pod if /health stops
+          # responding. This is how a healthy rolling update works: the new
+          # pod must pass /health before the old pod is terminated.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+
+          # Readiness probe — Kubernetes won't route traffic to this pod
+          # until /health returns 200. Together with the liveness probe,
+          # this gives us zero-downtime rolling updates.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3

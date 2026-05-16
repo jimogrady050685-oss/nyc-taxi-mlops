@@ -1,10 +1,15 @@
-# Python dependencies - to be finalized
-flask
-scikit-learn
-pandas
-numpy
-joblib
-requests
-pyarrow
-gunicorn
+# requirements.txt — Python dependencies
+# ─────────────────────────────────────────
+# Core ML stack — scikit-learn replaces Spark MLlib from the original Databricks code
+flask==3.1.0
+scikit-learn==1.6.1
+pandas==2.2.3
+numpy==1.26.4
+joblib==1.4.2
+requests==2.32.3
+pyarrow==18.1.0
+gunicorn==23.0.0
 
+# MLflow — model versioning, hyperparameter logging, model lineage
+# (per lecturer's advice on MLOps tasks for the model-training stage)
+mlflow==2.18.0
