@@ -1,0 +1,36 @@
+# k8s/service.yaml — Kubernetes Service exposing the Flask API
+# ==============================================================
+# Mirrors the lecturer's student-performance service.yaml structure.
+# The service makes the pods reachable inside the cluster, and NodePort
+# exposes them on a fixed port on the cluster node — which on Kind means
+# you can reach it from your local browser via the Kind node IP.
+#
+# Video talking point:
+#   "service.yaml exposes the deployment to network traffic. Inside the
+#    cluster it picks up any pod with the app=taxi-fare label and routes
+#    port 80 of the service to port 5000 inside the container. The NodePort
+#    type means the service is also reachable from outside the cluster on
+#    port 30500 of the Kind node — that is what I use during the live demo
+#    to curl the /predict endpoint."
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: taxi-fare-service
+  labels:
+    app: taxi-fare
+spec:
+  type: NodePort     # NodePort exposes the service externally on a fixed port
+                     # ClusterIP would only expose internally; LoadBalancer
+                     # needs a cloud provider so it does not work on Kind
+
+  selector:
+    app: taxi-fare   # routes to any pod labelled app: taxi-fare
+
+  ports:
+    - name: http
+      port: 80              # service-side port (inside the cluster)
+      targetPort: 5000      # container-side port — matches gunicorn
+      nodePort: 30500       # node-side port — what you curl from outside
+                            # NodePort range on Kind is 30000-32767
+      protocol: TCP

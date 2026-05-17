@@ -1,0 +1,73 @@
+# docker-compose.yml — Local development and GCP VM orchestration
+# =================================================================
+# Two services:
+#   train  — runs train.py once to produce models/gbt_model.joblib
+#   api    — runs gunicorn serving app.py on port 5000
+#
+# Usage:
+#   Local dev:   docker compose up api           # start the API
+#   Full train:  docker compose run --rm train   # run a training job
+#   Both:        docker compose up               # train then serve
+#
+# On the GCP VM, GitHub Actions runs:
+#   docker compose pull && docker compose up -d api
+#
+# Video talking point:
+#   "docker-compose.yml defines two services. The api service is what runs
+#    permanently on the GCP VM — it serves predictions on port 5000.
+#    The train service is what GitHub Actions runs when a new training trigger
+#    fires — it runs train.py inside the same image, writes the model file to
+#    the shared models/ volume, then exits. The api service picks up the new
+#    model on its next restart."
+
+version: "3.9"
+
+services:
+
+  # ── Training job ────────────────────────────────────────────────────────────
+  # Runs train.py and exits. Does NOT stay running.
+  # GitHub Actions CT workflow calls: docker compose run --rm train
+  train:
+    build: .
+    image: ${DOCKER_IMAGE:-nyctaxi-fare:latest}
+    command: python train.py
+    environment:
+      - MODEL_DIR=/app/models
+      - DATA_DIR=/tmp/data
+      - SAMPLE_FRACTION=${SAMPLE_FRACTION:-0.2}
+    volumes:
+      # Mount the models directory from the VM host so the .joblib file
+      # persists after the training container exits
+      - ./models:/app/models
+      # Mount /tmp/data so the downloaded Parquet is cached between runs
+      - taxi-data:/tmp/data
+
+  # ── Prediction API ───────────────────────────────────────────────────────────
+  # Runs gunicorn serving app.py. Stays running — this is the deployed service.
+  # GitHub Actions CD workflow calls: docker compose up -d api
+  api:
+    build: .
+    image: ${DOCKER_IMAGE:-nyctaxi-fare:latest}
+    ports:
+      # Map VM port 5000 to container port 5000
+      # To reach this from the internet, open firewall port 5000 in GCP
+      - "5000:5000"
+    environment:
+      - MODEL_DIR=/app/models
+      - MODEL_PATH=/app/models/gbt_model.joblib
+      - METRICS_PATH=/app/models/metrics.json
+      - PORT=5000
+    volumes:
+      # Same models volume — api reads the .joblib that train.py wrote
+      - ./models:/app/models
+    restart: unless-stopped   # auto-restart if the container crashes
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+# ── Named volumes ─────────────────────────────────────────────────────────────
+volumes:
+  taxi-data:    # caches the downloaded Parquet file between training runs
