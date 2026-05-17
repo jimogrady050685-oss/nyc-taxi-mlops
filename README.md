@@ -1,2 +1,1 @@
-# nyc-taxi-mlops
-CA3 for Big Data Architecture
+# NYC Taxi Fare Prediction — MLOps Pipeline

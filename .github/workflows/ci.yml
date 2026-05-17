@@ -1,0 +1,48 @@
+# .github/workflows/ci.yml — Continuous Integration smoke test
+# ==============================================================
+# Triggers on: every push to non-main branches, and every PR targeting main.
+# Purpose: catch broken Python imports, preprocessing regressions, and
+# Flask app errors BEFORE they reach main (where ml-pipeline.yml runs the
+# full preprocess → train → build → deploy chain).
+#
+# This is intentionally lightweight — it does NOT download the 1.4 GB
+# dataset, does NOT train a real model, and does NOT push any images.
+# It just confirms the code is structurally sound.
+#
+# Video talking point (brief — CI is not the showcase):
+#   "ci.yml runs on every push and PR. It verifies that preprocess.py and
+#    app.py import cleanly and that a synthetic-data smoke test of the
+#    pipeline runs without errors. If this fails, the merge is blocked."
+
+name: CI — Smoke Test
+
+on:
+  push:
+    branches-ignore: [main]      # main is handled by ml-pipeline.yml
+  pull_request:
+    branches: [main]
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Smoke test — preprocessing on synthetic data
+        run: python scripts/test_preprocess.py
+
+      - name: Smoke test — Flask app imports
+        run: python -c "from app import app; assert app is not None; print('OK')"
+
+      - name: Smoke test — train.py imports
+        run: python -c "import train; print('OK')"

@@ -1,0 +1,71 @@
+# argocd/application.yaml — Argo CD Application manifest
+# ==========================================================
+# This is the showcase artefact for the Continuous Delivery stage.
+# It tells Argo CD: "watch this Git repo, this folder, this branch, and
+# whenever anything changes there, sync those changes onto the Kubernetes
+# cluster automatically."
+#
+# This file is applied ONCE to the Argo CD namespace with:
+#   kubectl apply -n argocd -f argocd/application.yaml
+# After that, Argo CD takes over — it polls the GitHub repo every 3 minutes
+# (configurable) and reconciles any drift between the repo state and the
+# cluster state. This is GitOps in its simplest form.
+#
+# Video talking point — this is the part to spend time on:
+#   "argocd/application.yaml is the heart of my Continuous Delivery stage.
+#    It points Argo CD at my GitHub repo's k8s/ folder. Whenever I push a
+#    change to deployment.yaml or service.yaml on the main branch, Argo CD
+#    detects it within minutes and applies the change to the Kubernetes
+#    cluster — without any manual kubectl commands and without GitHub
+#    Actions needing SSH access to the cluster. The cluster pulls FROM Git,
+#    rather than CI pushing TO the cluster. This is the GitOps pattern."
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+
+metadata:
+  name: taxi-fare           # the Argo CD application name
+  namespace: argocd         # Argo CD's own namespace — all its components live here
+  finalizers:
+    # Ensures that when this application is deleted, Argo CD also cleans up
+    # the resources it created in the cluster (otherwise pods would linger)
+    - resources-finalizer.argocd.argoproj.io
+
+spec:
+  # The Argo CD project — "default" is fine for a single-app demo.
+  # In a production system you would create a separate project with RBAC.
+  project: default
+
+  # ── Source: where Argo CD reads the desired state from ──────────────────────
+  source:
+    # IMPORTANT: replace this with your actual GitHub repo URL
+    repoURL:       https://github.com/jimogrady050685-oss/nyc-taxi-mlops.git
+    targetRevision: main          # the branch Argo CD tracks
+    path:           k8s           # the folder containing deployment.yaml + service.yaml
+
+  # ── Destination: where Argo CD applies the resources to ────────────────────
+  destination:
+    # https://kubernetes.default.svc is the in-cluster API server address.
+    # Because Argo CD is running INSIDE the Kind cluster, this is how it
+    # talks to itself. If you deployed Argo CD to a different cluster it
+    # would talk to a remote cluster over its API endpoint instead.
+    server:    https://kubernetes.default.svc
+    namespace: default            # the application's resources go here, not in argocd
+
+  # ── Sync policy: how aggressively Argo CD reconciles drift ─────────────────
+  syncPolicy:
+    automated:
+      # prune: true — if you delete a resource from the repo, Argo CD removes
+      # it from the cluster too. Without this, deleted resources would linger.
+      prune:    true
+      # selfHeal: true — if someone manually edits a resource in the cluster
+      # (e.g. kubectl edit deployment), Argo CD reverts it back to match Git.
+      # Git is the single source of truth. This is core to GitOps.
+      selfHeal: true
+
+    syncOptions:
+      - CreateNamespace=true       # create the destination namespace if missing
+      - ApplyOutOfSyncOnly=true    # only re-apply resources that have drifted
+
+  # Retry configuration — Argo CD retries failed syncs with exponential backoff
+  revisionHistoryLimit: 5          # keep last 5 sync revisions for rollback

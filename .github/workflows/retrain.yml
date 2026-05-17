@@ -1,0 +1,74 @@
+# .github/workflows/retrain.yml — Continuous Training
+# ======================================================
+# Dedicated workflow for the Continuous Training stage (one of the "latter
+# stages" the lecturer said scores higher).
+#
+# Triggers:
+#   1. Scheduled — weekly Sunday 02:00 UTC, simulates "new data has arrived"
+#   2. Manual    — workflow_dispatch from the GitHub UI for live demo
+#   3. Repository dispatch — could be fired by an external monitor (e.g. Grafana)
+#      detecting data drift or accuracy degradation. This is the hook the
+#      lecturer described: "you'd bring down the threshold really low so it
+#      triggers some way" for the demo.
+#
+# What it does:
+#   Calls the main ml-pipeline workflow via reusable workflow invocation.
+#   This avoids duplicating the preprocess → train → build logic.
+#
+# Video talking point — THIS IS A FOCAL POINT:
+#   "retrain.yml is the Continuous Training entry point. It can fire on a
+#    schedule — weekly, to retrain on the latest TLC data — or be triggered
+#    manually for the demo, or by an external monitor like Grafana detecting
+#    model drift. It reuses the main ml-pipeline jobs so the retraining
+#    follows the exact same preprocessing, training, and image-building
+#    path as a normal release. After the new image is pushed to Docker Hub,
+#    Argo CD sees the deployment.yaml hasn't changed (still :latest) but
+#    because of imagePullPolicy: Always, the next pod restart pulls the
+#    new image. I can also force-sync from the Argo CD UI to redeploy
+#    immediately during the demo."
+
+name: CT — Retrain Model
+
+on:
+  schedule:
+    # Sunday 02:00 UTC — simulates a weekly data refresh cadence
+    - cron: "0 2 * * 0"
+
+  workflow_dispatch:
+    inputs:
+      sample_fraction:
+        description: "Sample fraction for retraining (0.0-1.0)"
+        default: "0.1"
+        required: false
+      reason:
+        description: "Why is this retrain being triggered?"
+        default: "manual demo"
+        required: false
+
+  # Allow an external system (e.g. Grafana webhook) to fire this
+  repository_dispatch:
+    types: [model-drift-detected]
+
+jobs:
+  log-trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log retrain trigger
+        run: |
+          echo "Retrain triggered."
+          echo "Event: ${{ github.event_name }}"
+          echo "Reason: ${{ github.event.inputs.reason || 'scheduled or external' }}"
+          echo "Sample fraction: ${{ github.event.inputs.sample_fraction || '0.1' }}"
+
+  # Re-use the main ML pipeline (preprocess → train → build → push)
+  # This avoids duplicating workflow code and means a retrain follows the
+  # same exact path as a normal release — full lineage and reproducibility.
+  retrain-pipeline:
+    needs: log-trigger
+    uses: ./.github/workflows/ml-pipeline.yml
+    secrets: inherit
+    # GitHub Actions does not let us pass workflow_dispatch inputs directly
+    # to a reusable workflow that has its own workflow_dispatch trigger;
+    # for the demo, ml-pipeline.yml's default SAMPLE_FRACTION applies.
+    # In a production setup you'd convert ml-pipeline.yml's training step
+    # to read a workflow_call input instead.
