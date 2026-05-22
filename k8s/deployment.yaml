@@ -1,17 +1,11 @@
-# k8s/deployment.yaml — Kubernetes Deployment for the Flask API
-# ===============================================================
-# This file matches the structure of the lecturer's student-performance
-# deployment.yaml exactly. Argo CD watches the k8s/ folder of this repo
-# and syncs any changes to this file into the Kind cluster automatically.
+# k8s/deployment.yaml
+# ====================
+# Tells Kubernetes how to run the Flask API container.
+# Argo CD watches this file and syncs any changes to the Kind cluster automatically.
 #
-# Video talking point:
-#   "deployment.yaml tells Kubernetes how to run the application. One replica
-#    of the taxi-fare image, pulled from my Docker Hub repository. The
-#    container exposes port 5000 — the Flask gunicorn port. When I push a
-#    new image to Docker Hub and update this file's image tag (or use :latest
-#    with imagePullPolicy: Always), Argo CD detects the change and triggers
-#    a rolling update — Kubernetes spins up the new pod, waits for it to be
-#    healthy, then terminates the old one. Zero-downtime deployment."
+# When a new image is pushed to Docker Hub, Argo CD detects the drift and triggers a rolling update.
+# Kubernetes brings up the new pod, waits for it to pass the health check, then terminates the old one.
+# That is how zero downtime deployments work here.
 
 apiVersion: apps/v1
 kind: Deployment
@@ -20,16 +14,12 @@ metadata:
   labels:
     app: taxi-fare
 spec:
-  # Single replica is fine for a demo. Increase this number to scale out;
-  # Kubernetes will handle the rolling update automatically when the image
-  # tag changes — this is what the lecturer means by "using Kubernetes to
-  # its full potential" rather than just treating it as a container runner.
+  # One replica is fine for a demo environment.
+  # Increasing this number scales the API out horizontally and Kubernetes handles the rolling update automatically.
   replicas: 1
-
   selector:
     matchLabels:
       app: taxi-fare
-
   template:
     metadata:
       labels:
@@ -37,22 +27,15 @@ spec:
     spec:
       containers:
         - name: taxi-fare
-          # IMPORTANT: replace YOUR_DOCKERHUB_USERNAME with your actual username
-          # The lecturer's example used "adunasweeney/student-performance:latest"
           image: jcogrady/nyctaxi-fare:latest
-
-          # imagePullPolicy: Always forces Kubernetes to re-pull the image
-          # every time a pod starts. With :latest tag this is how Argo CD
-          # picks up new model versions after CT retraining workflow runs.
+          # Always re-pull the image when a pod starts.
+          # This is how new model versions get picked up after a retrain pushes a fresh :latest image to Docker Hub.
           imagePullPolicy: Always
-
           ports:
             - name: http
-              containerPort: 5000   # gunicorn listens on 5000 inside the container
+              containerPort: 5000
               protocol: TCP
-
-          # Resource limits — Kind clusters have ~4 GB total. These are sensible
-          # ceilings that prevent one pod from starving the others.
+          # Resource limits stop one pod from consuming the whole Kind cluster.
           resources:
             requests:
               cpu: 100m
@@ -60,10 +43,7 @@ spec:
             limits:
               cpu: 500m
               memory: 1Gi
-
-          # Liveness probe — Kubernetes restarts the pod if /health stops
-          # responding. This is how a healthy rolling update works: the new
-          # pod must pass /health before the old pod is terminated.
+          # Kubernetes restarts the pod if /health stops responding.
           livenessProbe:
             httpGet:
               path: /health
@@ -72,10 +52,8 @@ spec:
             periodSeconds: 30
             timeoutSeconds: 10
             failureThreshold: 3
-
-          # Readiness probe — Kubernetes won't route traffic to this pod
-          # until /health returns 200. Together with the liveness probe,
-          # this gives us zero-downtime rolling updates.
+          # Kubernetes will not route any traffic to this pod until /health returns 200.
+          # Combined with the liveness probe above this gives us zero downtime rolling updates.
           readinessProbe:
             httpGet:
               path: /health

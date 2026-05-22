@@ -1,20 +1,13 @@
 """
-preprocess.py — Data Ingestion & Cleaning Pipeline
-====================================================
-Converted from Databricks PySpark (Cells 1–3 of original notebook).
+preprocess.py
+=============
+Data ingestion and cleaning pipeline for the NYC Taxi Fare model.
 
-Original: PySpark DataFrames + Spark SQL functions (F.col, F.when, F.hour, etc.)
-This file: pandas + numpy — same logic, same column names, same filter thresholds.
+Originally written in PySpark on Databricks. Converted to pandas and numpy so it can run on a plain Python Docker container with no Spark cluster.
+The logic, column names, and filter thresholds are the same as the original.
 
-The dataset is downloaded at runtime from the NYC TLC public URL so we don't
-commit a 1.4 GB Parquet file to GitHub (which has a 100 MB file size limit).
-
-Video talking point:
-  "preprocess.py does everything the original Databricks Cell 1–3 did —
-   ingest from the public NYC TLC URL, clean the data through five funnel
-   stages, engineer features, and return a clean DataFrame ready for training.
-   The only difference is pandas instead of PySpark because we're running on
-   a plain Python Docker container with no Spark cluster."
+The dataset is downloaded at runtime from the NYC TLC public URL.
+At 1.4 GB it cannot be committed to GitHub so we pull it fresh each run.
 """
 
 import os
@@ -22,26 +15,19 @@ import numpy as np
 import pandas as pd
 import requests
 
-# ── NYC TLC public dataset URL — downloaded at runtime, not committed to repo ──
 PARQUET_URL = (
     "https://d37ci6vzurychx.cloudfront.net/trip-data/"
     "yellow_tripdata_2025-01.parquet"
 )
-DATA_DIR = os.environ.get("DATA_DIR", "/tmp/data")
+DATA_DIR      = os.environ.get("DATA_DIR", "/tmp/data")
 LOCAL_PARQUET = os.path.join(DATA_DIR, "yellow_tripdata_2025-01.parquet")
 
-# ── Train/validation split date — same as original notebook ──────────────────
-SPLIT_DATE = "2025-01-25"
-
-# ── 20% sample fraction — mirrors the Databricks serverless memory constraint ─
-# In the original we sampled because of Databricks' 1 GB model cache limit.
-# Here we sample for faster CI test runs. Set SAMPLE_FRACTION=1.0 to use all data.
+SPLIT_DATE      = "2025-01-25"
 SAMPLE_FRACTION = float(os.environ.get("SAMPLE_FRACTION", "0.2"))
-SEED = 42
+SEED            = 42
 
-# ── Zone lookup — embedded directly (all 263 NYC TLC taxi zones) ──────────────
-# In the original notebook this was a Python list passed to spark.createDataFrame.
-# Here it becomes a dict keyed by LocationID for a simple pandas merge.
+# All 263 NYC TLC taxi zones keyed by LocationID.
+# Used to join borough and zone name onto the trip records.
 ZONE_DATA = {
     1: ("EWR", "Newark Airport"), 2: ("Queens", "Jamaica Bay"),
     3: ("Bronx", "Allerton/Pelham Gardens"), 4: ("Manhattan", "Alphabet City"),
@@ -180,85 +166,71 @@ ZONE_DATA = {
 
 
 def _build_zone_df() -> pd.DataFrame:
-    """Convert the zone dict to a small lookup DataFrame for a merge."""
+    """Converts the zone dict into a small lookup DataFrame for merging."""
     rows = [(loc_id, boro, zone) for loc_id, (boro, zone) in ZONE_DATA.items()]
     return pd.DataFrame(rows, columns=["PULocationID", "PU_Borough", "PU_Zone"])
 
 
 def download_data(url: str = PARQUET_URL, dest: str = LOCAL_PARQUET) -> str:
     """
-    Download the NYC TLC Parquet file if it isn't already on disk.
-
-    Why: GitHub has a 100 MB file limit. At 1.4 GB the dataset can't be
-    committed to the repo, so we pull it at runtime from the TLC public CDN.
-    This mirrors what a real data pipeline would do — pull from source,
-    don't bake data into the container image.
+    Downloads the NYC TLC parquet file if it is not already on disk.
+    Streams in 8 MB chunks to avoid memory issues with the 1.4 GB file.
     """
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     if os.path.exists(dest):
-        print(f"[preprocess] Data already cached at {dest}")
+        print(f"Data already cached at {dest}")
         return dest
 
-    print(f"[preprocess] Downloading {url} ...")
+    print(f"Downloading {url} ...")
     with requests.get(url, stream=True, timeout=300) as r:
         r.raise_for_status()
         with open(dest, "wb") as f:
             for chunk in r.iter_content(chunk_size=8 * 1024 * 1024):
                 f.write(chunk)
-    print(f"[preprocess] Download complete → {dest}")
+    print(f"Download complete at {dest}")
     return dest
 
 
 def load_raw(path: str) -> pd.DataFrame:
     """
-    Read the Parquet file into a pandas DataFrame.
-
-    Original notebook Cell 1 used spark.read.parquet(PARQUET_PATH) and then
-    joined a zone lookup Spark DataFrame. Here we use pd.read_parquet + merge.
+    Reads the parquet file and joins the zone lookup onto it.
+    Equivalent to the original Spark read + zone DataFrame join.
     """
     df = pd.read_parquet(path)
-    print(f"[preprocess] Raw records: {len(df):,}")
+    print(f"Raw records: {len(df):,}")
 
-    # Join zone borough / zone name — equivalent to the original Spark join
     zone_df = _build_zone_df()
     df = df.merge(zone_df, on="PULocationID", how="left")
-    print(f"[preprocess] After zone join: {len(df):,}")
+    print(f"After zone join: {len(df):,}")
     return df
 
 
 def clean(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Apply the five-stage data cleaning funnel from notebook Cell 2.
+    Five stage cleaning funnel ported from the original notebook.
 
-    Stage 1 — Temporal filter: drop trips where pickup is after dropoff.
-      Original: F.col("tpep_pickup_datetime") < F.col("tpep_dropoff_datetime")
-    Stage 2 — Illogical values: drop zero distance or zero fare records.
-      Original: F.col("trip_distance") > 0 and F.col("fare_amount") > 0
-    Stage 3 — P99 outlier cap: remove top 1% of distance, duration, and total_amount.
-      Original: df.approxQuantile(["trip_distance", ...], [0.99], 0.01)
-      Note: We use pandas quantile() — exact rather than approximate, same intent.
-    Stage 4 — Feature filters: drop records where spend_per_minute is undefined,
-              infinite, or over $100/min.
+    Stage 1: drop trips where pickup is after dropoff
+    Stage 2: drop records with zero distance or zero fare
+    Stage 3: remove the top 1% of distance, duration, and total_amount
+    Stage 4 and 5: drop records with invalid spend_per_minute values
+                   (handled in feature_engineering to keep the funnel together)
     """
     n0 = len(df)
 
-    # Ensure datetime types
     df["tpep_pickup_datetime"]  = pd.to_datetime(df["tpep_pickup_datetime"])
     df["tpep_dropoff_datetime"] = pd.to_datetime(df["tpep_dropoff_datetime"])
 
-    # ── Stage 1: Temporal filter ─────────────────────────────────────────────
-    # Original: 3,475,226 → 3,473,175  (removed 2,051 impossible timestamps)
+    # Stage 1: remove impossible timestamps
     df = df[df["tpep_pickup_datetime"] < df["tpep_dropoff_datetime"]].copy()
-    print(f"[clean] After temporal filter : {len(df):,}  (removed {n0 - len(df):,})")
+    print(f"After temporal filter: {len(df):,}  (removed {n0 - len(df):,})")
 
-    # ── Stage 2: Illogical values ────────────────────────────────────────────
+    # Stage 2: remove zero distance and zero fare records
     n1 = len(df)
     df = df[(df["trip_distance"] > 0) & (df["fare_amount"] > 0)].copy()
-    print(f"[clean] After illogical filter: {len(df):,}  (removed {n1 - len(df):,})")
+    print(f"After illogical filter: {len(df):,}  (removed {n1 - len(df):,})")
 
-    # ── Stage 3: P99 outlier cap ─────────────────────────────────────────────
+    # Stage 3: cap at the 99th percentile for distance, duration, and total amount
     n2 = len(df)
-    # Compute trip_duration_mins first so we can apply the P99 cap on it
     df["trip_duration_mins"] = (
         (df["tpep_dropoff_datetime"] - df["tpep_pickup_datetime"])
         .dt.total_seconds() / 60.0
@@ -267,63 +239,55 @@ def clean(df: pd.DataFrame) -> pd.DataFrame:
     p99_duration = df["trip_duration_mins"].quantile(0.99)
     p99_total    = df["total_amount"].quantile(0.99)
     df = df[
-        (df["trip_distance"]    <= p99_distance) &
+        (df["trip_distance"]      <= p99_distance) &
         (df["trip_duration_mins"] <= p99_duration) &
-        (df["total_amount"]     <= p99_total)
+        (df["total_amount"]       <= p99_total)
     ].copy()
-    print(f"[clean] After P99 cap         : {len(df):,}  (removed {n2 - len(df):,})")
+    print(f"After P99 cap: {len(df):,}  (removed {n2 - len(df):,})")
 
-    # ── Stage 4 & 5: Feature filters (applied after feature engineering) ──────
-    # Handled in feature_engineering() below to keep the funnel logic together.
     return df
 
 
 def feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Derive all features from notebook Cell 3.
+    Derives all features from the original notebook.
 
-    PySpark              →  pandas/numpy equivalent
-    ─────────────────────────────────────────────────
-    F.hour(col)          →  .dt.hour
-    F.dayofweek(col)     →  .dt.dayofweek + 1  (Spark is 1=Sun, pandas is 0=Mon)
-    F.when(...).otherwise→  np.where / boolean indexing
-    F.log1p(col)         →  np.log1p(col)
-    F.coalesce(col, 0)   →  .fillna(0)
+    PySpark to pandas equivalents used here:
+      F.hour(col)           >>  .dt.hour
+      F.dayofweek(col)      >>  .dt.dayofweek + offset to match Spark numbering
+      F.when().otherwise()  >>  np.where
+      F.log1p(col)          >>  np.log1p
+      F.coalesce(col, 0)    >>  .fillna(0)
 
-    Target: log_spend_per_trip = log1p(fare_amount)
-    All predictions will use np.expm1() to convert back to dollars.
+    The model target is log_spend_per_trip = log1p(fare_amount).
+    Use np.expm1() to convert predictions back to dollars.
     """
-    # ── Temporal features ────────────────────────────────────────────────────
     df["hour_of_day"] = df["tpep_pickup_datetime"].dt.hour
-    # Spark dayofweek: 1=Sunday, 7=Saturday.  pandas dayofweek: 0=Monday, 6=Sunday.
-    # We replicate Spark behaviour: add 1 and rotate Sunday to position 1.
-    dow_pandas = df["tpep_pickup_datetime"].dt.dayofweek   # 0=Mon ... 6=Sun
-    df["day_of_week"] = (dow_pandas + 2) % 7              # 1=Sun, 7=Sat — matches Spark
+
+    # Spark dayofweek is 1=Sunday through 7=Saturday.
+    # pandas dayofweek is 0=Monday through 6=Sunday.
+    # We rotate to match Spark so the feature means the same thing.
+    dow_pandas    = df["tpep_pickup_datetime"].dt.dayofweek
+    df["day_of_week"] = (dow_pandas + 2) % 7
     df["is_weekend"]  = np.where(df["tpep_pickup_datetime"].dt.dayofweek >= 5, 1, 0)
 
-    # ── Revenue targets ──────────────────────────────────────────────────────
-    # Original decision: switched from total_amount to fare_amount because
-    # tip_amount is $0 for cash payments, creating a bimodal distribution
-    # that the model can't reliably learn.
-    df["spend_per_trip"]    = df["fare_amount"].astype(float)
-    df["spend_per_minute"]  = df["fare_amount"] / df["trip_duration_mins"]
+    # fare_amount is used rather than total_amount because tip_amount is zero
+    # for cash payments, which creates a bimodal distribution the model struggles with
+    df["spend_per_trip"]   = df["fare_amount"].astype(float)
+    df["spend_per_minute"] = df["fare_amount"] / df["trip_duration_mins"]
 
-    # log1p transform to handle the right-skewed fare distribution.
-    # log1p(x) = log(1+x) — safe for x=0, avoids -inf.
-    # Reverse: np.expm1(prediction) to get dollars back.
+    # log1p transform handles the right skew in fare amounts
+    # reverse with np.expm1 to get dollars back from predictions
     df["log_spend_per_trip"] = np.log1p(df["spend_per_trip"])
 
-    # ── Surcharge indicator flags ────────────────────────────────────────────
-    # Convert continuous surcharge columns to binary flags.
-    # This reduces rounding noise while preserving the trip-type signal.
+    # Binary flags for surcharges rather than raw amounts to reduce rounding noise
     df["has_congestion"]  = (df["congestion_surcharge"].fillna(0) > 0).astype(int)
     df["has_airport_fee"] = (df["Airport_fee"].fillna(0) > 0).astype(int)
     df["has_cbd_fee"]     = (df["cbd_congestion_fee"].fillna(0) > 0).astype(int)
 
-    # ── Borough string column (for one-hot encoding downstream) ─────────────
     df["PU_Borough_str"] = df["PU_Borough"].fillna("Unknown").astype(str)
 
-    # ── Stage 4 & 5: Filter invalid spend_per_minute ─────────────────────────
+    # Stages 4 and 5: drop records where spend_per_minute is invalid
     n3 = len(df)
     df = df[
         df["spend_per_minute"].notna() &
@@ -333,38 +297,34 @@ def feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
         df["passenger_count"].notna() &
         (df["passenger_count"] > 0)
     ].copy()
-    print(f"[feature_eng] After feature filters: {len(df):,}  (removed {n3 - len(df):,})")
+    print(f"After feature filters: {len(df):,}  (removed {n3 - len(df):,})")
     return df
 
 
 def time_split(df: pd.DataFrame, split_date: str = SPLIT_DATE):
     """
-    Time-aware train/validation split — same logic as notebook Cell 5.
+    Time aware train and validation split.
 
-    Why time-aware instead of random?
-    Random splitting leaks future temporal patterns into training and produces
-    optimistically biased evaluation metrics. We train on Jan 1–24 and validate
-    on Jan 25–31 so the model is evaluated on genuinely unseen future data.
+    Random splitting would leak future patterns into training and produce
+    inflated metrics. We train on Jan 1 to 24 and validate on Jan 25 to 31
+    so the model is always evaluated on data it has never seen.
     """
-    cutoff = pd.Timestamp(split_date)
-    train = df[df["tpep_pickup_datetime"] < cutoff].copy()
-    val   = df[df["tpep_pickup_datetime"] >= cutoff].copy()
+    cutoff  = pd.Timestamp(split_date)
+    train   = df[df["tpep_pickup_datetime"] < cutoff].copy()
+    val     = df[df["tpep_pickup_datetime"] >= cutoff].copy()
 
-    # Apply 20% sample — mirrors the Databricks serverless memory constraint.
-    # In production with full compute you'd remove this sampling step.
     train_s = train.sample(frac=SAMPLE_FRACTION, random_state=SEED)
     val_s   = val.sample(frac=SAMPLE_FRACTION, random_state=SEED)
 
-    print(f"[split] Train full: {len(train):,} | Sample: {len(train_s):,}")
-    print(f"[split] Val full  : {len(val):,} | Sample: {len(val_s):,}")
+    print(f"Train: {len(train):,} full  |  {len(train_s):,} sampled")
+    print(f"Val:   {len(val):,} full  |  {len(val_s):,} sampled")
     return train_s, val_s
 
 
 def run_pipeline(parquet_path: str = None) -> tuple:
     """
-    End-to-end pipeline: download → load → clean → feature engineer → split.
-    Returns (train_df, val_df) — both are feature-complete pandas DataFrames.
-
+    Runs the full pipeline end to end.
+    Returns (train_df, val_df) ready for training.
     Called by train.py as: train_df, val_df = preprocess.run_pipeline()
     """
     if parquet_path is None:
@@ -373,15 +333,13 @@ def run_pipeline(parquet_path: str = None) -> tuple:
     df_raw   = load_raw(parquet_path)
     df_clean = clean(df_raw)
     df_feat  = feature_engineering(df_clean)
-    train_df, val_df = time_split(df_feat)
-    return train_df, val_df
+    return time_split(df_feat)
 
 
 if __name__ == "__main__":
-    # Run standalone to verify the pipeline works end-to-end
     train_df, val_df = run_pipeline()
-    print(f"\n✓ Pipeline complete")
-    print(f"  Train shape: {train_df.shape}")
-    print(f"  Val   shape: {val_df.shape}")
-    print(f"  Target range: {train_df['log_spend_per_trip'].min():.2f} – "
+    print(f"\nPipeline complete")
+    print(f"Train shape: {train_df.shape}")
+    print(f"Val shape:   {val_df.shape}")
+    print(f"Target range: {train_df['log_spend_per_trip'].min():.2f} to "
           f"{train_df['log_spend_per_trip'].max():.2f}")

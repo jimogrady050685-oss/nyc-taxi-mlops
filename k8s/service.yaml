@@ -1,17 +1,12 @@
-# k8s/service.yaml — Kubernetes Service exposing the Flask API
-# ==============================================================
-# Mirrors the lecturer's student-performance service.yaml structure.
-# The service makes the pods reachable inside the cluster, and NodePort
-# exposes them on a fixed port on the cluster node — which on Kind means
-# you can reach it from your local browser via the Kind node IP.
+# k8s/service.yaml
+# =================
+# Exposes the Flask API to network traffic.
 #
-# Video talking point:
-#   "service.yaml exposes the deployment to network traffic. Inside the
-#    cluster it picks up any pod with the app=taxi-fare label and routes
-#    port 80 of the service to port 5000 inside the container. The NodePort
-#    type means the service is also reachable from outside the cluster on
-#    port 30500 of the Kind node — that is what I use during the live demo
-#    to curl the /predict endpoint."
+# Inside the cluster it picks up any pod labelled app: taxi-fare and routes traffic to port 5000 where gunicorn is listening.
+# NodePort makes it reachable from outside the cluster on port 30500 of the Kind node. 
+# That is what the curl commands hit during the demo.
+#
+# NodePort was chosen over ClusterIP because ClusterIP is internal only, and LoadBalancer requires a cloud provider which Kind does not have.
 
 apiVersion: v1
 kind: Service
@@ -20,17 +15,14 @@ metadata:
   labels:
     app: taxi-fare
 spec:
-  type: NodePort     # NodePort exposes the service externally on a fixed port
-                     # ClusterIP would only expose internally; LoadBalancer
-                     # needs a cloud provider so it does not work on Kind
+  type: NodePort
 
   selector:
-    app: taxi-fare   # routes to any pod labelled app: taxi-fare
+    app: taxi-fare
 
   ports:
     - name: http
-      port: 80              # service-side port (inside the cluster)
-      targetPort: 5000      # container-side port — matches gunicorn
-      nodePort: 30500       # node-side port — what you curl from outside
-                            # NodePort range on Kind is 30000-32767
+      port: 80          # port inside the cluster
+      targetPort: 5000  # port the container is listening on
+      nodePort: 30500   # port exposed on the Kind node (range is 30000 to 32767)
       protocol: TCP

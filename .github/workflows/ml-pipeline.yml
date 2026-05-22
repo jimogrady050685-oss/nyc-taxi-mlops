@@ -1,66 +1,50 @@
 # .github/workflows/ml-pipeline.yml
 # ==================================
-# This is the showcase workflow. It demonstrates:
-#   1. Data Acquisition & Preprocessing  (stage 1)
-#   2. Model Training & Testing          (stage 2)  ← MLflow logged
-#   3. Continuous Delivery               (stage 5)  ← image pushed → Argo CD picks up
+# This is the main pipeline. It runs three jobs in sequence:
 #
-# Architecture (matches the lecturer's artefact-storage tutorial):
-#   ┌──────────────┐   features.parquet   ┌──────────────┐   model.joblib   ┌──────────────┐
-#   │ preprocess   │  ─────artifact───>   │   train      │  ───artifact───> │  build &     │
-#   │ (Ubuntu)     │                      │   (Ubuntu)   │                  │  push image  │
-#   └──────────────┘                      └──────────────┘                  └──────────────┘
-#                                                │
-#                                                ▼
-#                                       mlruns/ uploaded as
-#                                       artifact for model lineage
+#   preprocess  >>  train  >>  build-image
 #
-# The three jobs run on separate Ubuntu runners. Data flows between them
-# via actions/upload-artifact + actions/download-artifact — exactly the
-# pattern the lecturer taught on 16 May.
+# Each job runs on its own fresh Ubuntu runner.
+# Data moves between jobs using GitHub artifacts so nothing is shared on disk.
+# The run ID is baked into every artifact name so you can trace any model
+# back to the exact data that produced it.
 #
-# Video talking point:
-#   "ml-pipeline.yml runs the full pipeline as three separate jobs.
-#    Job one downloads the NYC TLC dataset, cleans it, engineers features,
-#    and uploads the result as a GitHub artifact. Job two needs job one,
-#    downloads that artifact, trains the GBT model with MLflow tracking,
-#    and uploads the .joblib model AND the mlruns directory as artifacts.
-#    Job three needs job two, downloads the model, bakes it into a Docker
-#    image, and pushes the image to Docker Hub. Each artifact is versioned
-#    by run-ID so I have full data and model lineage across every pipeline run."
+# Triggers on a push to main but only if a relevant file actually changed.
+# Changing the README will not kick this off.
 
-name: ML Pipeline — Preprocess → Train → Build
+name: "ML Pipeline — Preprocess, Train, Build"
 
 on:
   push:
     branches: [main]
     paths:
-      # Only trigger on changes that actually affect the model/pipeline
       - "preprocess.py"
       - "train.py"
       - "requirements.txt"
       - "Dockerfile"
       - ".github/workflows/ml-pipeline.yml"
 
-  # Manual trigger — also doubles as the Continuous Training entry point
+  # Can also be triggered manually from the Actions tab.
+  # retrain.yml calls this workflow the same way.
   workflow_dispatch:
     inputs:
       sample_fraction:
-        description: "Sample fraction (0.0-1.0). Smaller = faster runs."
+        description: "How much of the dataset to use (0.0 to 1.0). Smaller is faster."
         default: "0.05"
         required: false
 
 jobs:
 
-  # ── Stage 1: Data Acquisition & Preprocessing ────────────────────────────────
+  # Job 1: pull the NYC TLC data, clean it and engineer the features.
+  # Output is features.parquet uploaded as an artifact for the train job.
   preprocess:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -69,8 +53,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # Run preprocess.py — downloads NYC TLC parquet, cleans, feature-engineers,
-      # writes processed/features.parquet to disk.
+      # Runs preprocess.py. Downloads the TLC parquet, cleans it and
+      # writes the engineered features out to processed/features.parquet.
       - name: Run preprocessing
         env:
           SAMPLE_FRACTION: ${{ github.event.inputs.sample_fraction || '0.05' }}
@@ -84,9 +68,7 @@ jobs:
           print(f'Wrote {len(combined):,} rows to processed/features.parquet')
           "
 
-      # ── Upload features as artifact — this is the data lineage point ────────
-      # The lecturer-taught pattern: data flows between jobs via artifacts,
-      # never via shared filesystem (because jobs run on different runners).
+      # Tag the artifact with the run ID so it can be matched to the model later.
       - name: Upload features artifact
         uses: actions/upload-artifact@v4
         with:
@@ -94,16 +76,19 @@ jobs:
           path:           processed/features.parquet
           retention-days: 7
 
-  # ── Stage 2: Model Training & Testing (with MLflow) ──────────────────────────
+
+  # Job 2: train the model on the features produced above.
+  # MLflow logs every run so you get full parameter and metric history.
+  # Will not start unless the preprocess job completed successfully.
   train:
     runs-on: ubuntu-latest
-    needs: preprocess        # blocks until preprocess job succeeds
+    needs: preprocess
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -112,15 +97,16 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # Download the features artifact produced by the preprocess job
+      # Pull down the features artifact from the preprocess job above.
       - name: Download features artifact
         uses: actions/download-artifact@v4
         with:
           name: features-${{ github.run_id }}
           path: processed/
 
-      # Train the model. train.py reads FEATURES_PARQUET env var to skip the
-      # download step and load the already-preprocessed features directly.
+      # FEATURES_PARQUET tells train.py to skip the download and use what
+      # preprocess already produced. GITHUB_SHA is stored as an MLflow tag
+      # so any model can be traced back to the exact commit that built it.
       - name: Run training with MLflow
         env:
           FEATURES_PARQUET:    processed/features.parquet
@@ -131,7 +117,6 @@ jobs:
           mkdir -p models
           python train.py
 
-      # Upload the trained model — consumed by the build-image job next
       - name: Upload model artifact
         uses: actions/upload-artifact@v4
         with:
@@ -141,9 +126,8 @@ jobs:
             models/metrics.json
           retention-days: 30
 
-      # Upload mlruns directory — this is the model lineage / experiment history.
-      # You can download this from the GitHub Actions UI and run `mlflow ui` locally
-      # to see every run side-by-side, with hyperparameters and metrics.
+      # Keeping the mlruns directory as an artifact means you can download
+      # and inspect any historical run directly from the Actions tab.
       - name: Upload MLflow runs artifact
         uses: actions/upload-artifact@v4
         with:
@@ -151,21 +135,23 @@ jobs:
           path: mlruns/
           retention-days: 30
 
-      # Print the metrics so they show up in the workflow run log
       - name: Print metrics
         run: cat models/metrics.json
 
-  # ── Stage 3: Build Docker image and push to Docker Hub ───────────────────────
+
+  # Job 3: bake the trained model into a Docker image and push it to Docker Hub.
+  # Argo CD watches the cluster and will pull the new image automatically.
+  # Will not start unless the train job completed successfully.
   build-image:
     runs-on: ubuntu-latest
-    needs: train             # blocks until training succeeds
+    needs: train
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Download the trained model into the local models/ directory
-      # so the Dockerfile's COPY models/ ./models/ picks it up
+      # The Dockerfile copies models/ into the image so the model needs
+      # to be on disk here before the build runs.
       - name: Download model artifact
         uses: actions/download-artifact@v4
         with:
@@ -178,8 +164,8 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # Build and push. Tag with both git SHA (for traceability) and :latest
-      # (so the Kubernetes deployment.yaml's image: ...:latest line works).
+      # Push two tags. The SHA tag gives you a permanent record of what was deployed.
+      # The latest tag is what the Kubernetes deployment.yaml points to.
       - name: Build and push image
         uses: docker/build-push-action@v5
         with:
@@ -189,11 +175,9 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/nyctaxi-fare:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/nyctaxi-fare:${{ github.sha }}
 
-      # At this point Argo CD takes over.
-      # Because deployment.yaml uses imagePullPolicy: Always, the next time
-      # Argo CD reconciles (within ~3 min) it will re-pull :latest and
-      # Kubernetes will perform a rolling update.
-      - name: Image pushed
+      # Argo CD reconciles every 3 minutes. Once it detects the new image
+      # it will do a rolling update on the Kind cluster with no manual steps needed.
+      - name: Confirm image pushed
         run: |
-          echo "✓ Image pushed: ${{ secrets.DOCKERHUB_USERNAME }}/nyctaxi-fare:latest"
-          echo "Argo CD will sync the deployment to the Kind cluster within 3 minutes."
+          echo "Image pushed: ${{ secrets.DOCKERHUB_USERNAME }}/nyctaxi-fare:latest"
+          echo "Argo CD will sync to the Kind cluster within 3 minutes."
