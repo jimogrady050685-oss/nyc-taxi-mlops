@@ -1,6 +1,6 @@
-# requirements.txt — Python dependencies
+# requirements.txt: Python dependencies
 # ─────────────────────────────────────────
-# Core ML stack — scikit-learn replaces Spark MLlib from the original Databricks code
+# Core ML stack: scikit-learn replaces Spark MLlib from the original Databricks code
 flask==3.1.0
 scikit-learn==1.6.1
 pandas==2.2.3
@@ -10,6 +10,5 @@ requests==2.32.3
 pyarrow==18.1.0
 gunicorn==23.0.0
 
-# MLflow — model versioning, hyperparameter logging, model lineage
-# (per lecturer's advice on MLOps tasks for the model-training stage)
+# MLflow : model versioning, hyperparameter logging, model lineage
 mlflow==2.18.0

@@ -1,23 +1,15 @@
 """
-app.py — Flask API for NYC Taxi Fare Prediction
-================================================
-This Flask application loads the trained GBT model (gbt_model.joblib) and
-exposes two endpoints:
+app.py
+======
+Flask API for the NYC Taxi Fare prediction model.
 
-  POST /predict  — accepts trip features, returns predicted fare in dollars
-  GET  /health   — returns model status and last recorded validation metrics
+Two endpoints:
+  POST /predict  — takes trip features, returns a predicted fare in dollars
+  GET  /health   — returns model status and the last recorded validation metrics
 
-Why Flask? The assignment requires "a Flask API or equivalent". Flask is the
-simplest choice for a solo developer wrapping a single scikit-learn model.
-It runs inside the Docker container on GCP VM port 5000.
-
-Video talking point:
-  "app.py is the serving layer. When GitHub Actions deploys a new model, it
-   restarts this container with the updated .joblib file. The /predict endpoint
-   takes the same features the model was trained on — trip distance, duration,
-   hour of day, borough etc. — and returns the predicted fare in dollars.
-   The /health endpoint is what the CI pipeline calls to confirm the container
-   is up and responding before marking a deployment as successful."
+The model is loaded once at startup from models/gbt_model.joblib.
+If the file is not there the app still starts but returns 503 until a trained
+model is available.
 """
 
 import json
@@ -27,26 +19,22 @@ import pandas as pd
 import joblib
 from flask import Flask, request, jsonify
 
-# ── Paths — same defaults as train.py ────────────────────────────────────────
-MODEL_PATH   = os.environ.get("MODEL_PATH", "models/gbt_model.joblib")
+MODEL_PATH   = os.environ.get("MODEL_PATH",   "models/gbt_model.joblib")
 METRICS_PATH = os.environ.get("METRICS_PATH", "models/metrics.json")
 
 app = Flask(__name__)
 
-# ── Load model at startup — fail fast if the file isn't there ────────────────
-# joblib.load() deserialises the sklearn Pipeline (preprocessor + GBT) that
-# was saved at the end of train.py.
+# Load the model when the container starts. 
+# If the file is missing the app keeps running but every endpoint will return 503 until a model is present.
 try:
     model = joblib.load(MODEL_PATH)
-    print(f"[app] Model loaded from {MODEL_PATH}")
+    print(f"Model loaded from {MODEL_PATH}")
 except FileNotFoundError:
     model = None
-    print(f"[app] WARNING: model file not found at {MODEL_PATH}. "
-          "Run train.py first, then restart the container.")
+    print(f"WARNING: no model file found at {MODEL_PATH}. Run train.py first.")
 
-
-# ── Feature columns — must match train.py exactly ────────────────────────────
-# The model's ColumnTransformer expects these columns in this order.
+# These must match the column order used in train.py exactly.
+# The ColumnTransformer inside the pipeline expects them in this order.
 NUM_COLS = [
     "hour_of_day", "day_of_week", "is_weekend",
     "trip_distance", "trip_duration_mins", "passenger_count",
@@ -59,13 +47,9 @@ ALL_FEATURE_COLS = NUM_COLS + CAT_COLS
 @app.route("/health", methods=["GET"])
 def health():
     """
-    Health check endpoint.
-
-    Returns 200 if the model is loaded and ready.
-    Returns 503 if the model file wasn't found (e.g. before first training run).
-
-    GitHub Actions CD workflow calls GET /health after deploying to confirm
-    the container came up successfully.
+    Returns 200 if the model is loaded and ready to serve predictions.
+    Returns 503 if the model file was not found at startup.
+    Also returns whatever metrics were written by the last training run.
     """
     metrics = {}
     if os.path.exists(METRICS_PATH):
@@ -75,7 +59,7 @@ def health():
     if model is None:
         return jsonify({
             "status":  "degraded",
-            "message": "Model not loaded — run train.py to generate the model file",
+            "message": "Model not loaded. Run train.py to generate the model file.",
             "metrics": metrics,
         }), 503
 
@@ -89,11 +73,12 @@ def health():
 @app.route("/predict", methods=["POST"])
 def predict():
     """
-    Prediction endpoint.
+    Accepts a JSON body with trip feature fields and returns a predicted fare.
 
-    Accepts JSON body with trip feature fields. Returns predicted fare in dollars.
+    trip_distance and trip_duration_mins are required.
+    Everything else has a sensible default so partial requests still work.
 
-    Example request body:
+    Example request:
     {
         "hour_of_day":        14,
         "day_of_week":        3,
@@ -125,8 +110,7 @@ def predict():
     except Exception:
         return jsonify({"error": "Invalid JSON in request body"}), 400
 
-    # ── Build a single-row DataFrame with all required features ──────────────
-    # Default values are sensible fallbacks — same as the fillna() calls in train.py
+    # Start with sensible defaults and overlay whatever was sent in the request
     defaults = {
         "hour_of_day":        12,
         "day_of_week":        3,
@@ -142,7 +126,7 @@ def predict():
     }
     defaults.update(data)
 
-    # Validate that the required high-signal features are present
+    # These two fields carry the most signal so they are required
     required = ["trip_distance", "trip_duration_mins"]
     missing  = [f for f in required if f not in data]
     if missing:
@@ -152,13 +136,11 @@ def predict():
             "hint":    "trip_distance and trip_duration_mins are required",
         }), 422
 
-    # Build the feature row in the order the pipeline expects
     row = pd.DataFrame([{col: defaults[col] for col in ALL_FEATURE_COLS}])
 
-    # ── Run prediction ────────────────────────────────────────────────────────
     try:
         log_pred    = model.predict(row)[0]
-        dollar_pred = float(np.expm1(log_pred))   # inverse of log1p — back to $
+        dollar_pred = float(np.expm1(log_pred))  # model was trained on log1p(fare)
     except Exception as e:
         return jsonify({"error": f"Prediction failed: {str(e)}"}), 500
 
@@ -166,12 +148,12 @@ def predict():
         "predicted_fare_usd": round(dollar_pred, 2),
         "inputs":             {col: defaults[col] for col in ALL_FEATURE_COLS},
         "model":              "GradientBoostingRegressor",
-        "note":               "Predicted fare_amount (metered base fare, excludes tip and tolls)",
+        "note":               "Predicted base fare only. Excludes tip and tolls.",
     }), 200
 
 
 if __name__ == "__main__":
-    # 0.0.0.0 binds to all interfaces — required inside Docker so the host
-    # can reach the container via port forwarding (-p 5000:5000).
+    # 0.0.0.0 binds to all interfaces so the host can reach the container
+    # through Docker port forwarding
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)

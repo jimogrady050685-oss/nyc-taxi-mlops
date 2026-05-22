@@ -5,15 +5,7 @@
 #   2. Model Training & Testing          (stage 2)  ← MLflow logged
 #   3. Continuous Delivery               (stage 5)  ← image pushed → Argo CD picks up
 #
-# Architecture (matches the lecturer's artefact-storage tutorial):
-#   ┌──────────────┐   features.parquet   ┌──────────────┐   model.joblib   ┌──────────────┐
-#   │ preprocess   │  ─────artifact───>   │   train      │  ───artifact───> │  build &     │
-#   │ (Ubuntu)     │                      │   (Ubuntu)   │                  │  push image  │
-#   └──────────────┘                      └──────────────┘                  └──────────────┘
-#                                                │
-#                                                ▼
-#                                       mlruns/ uploaded as
-#                                       artifact for model lineage
+#   preprocess  >>  train  >>  build-image
 #
 # The three jobs run on separate Ubuntu runners. Data flows between them
 # via actions/upload-artifact + actions/download-artifact
@@ -31,7 +23,6 @@ on:
   push:
     branches: [main]
     paths:
-      # Only trigger on changes that actually affect the model/pipeline
       - "preprocess.py"
       - "train.py"
       - "requirements.txt"
@@ -42,7 +33,7 @@ on:
   workflow_dispatch:
     inputs:
       sample_fraction:
-        description: "Sample fraction (0.0-1.0). Smaller = faster runs."
+        description: "How much of the dataset to use (0.0 to 1.0). Smaller is faster."
         default: "0.05"
         required: false
 
@@ -53,10 +44,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -92,13 +83,13 @@ jobs:
   # Stage 2: Model Training & Testing (with MLflow)
   train:
     runs-on: ubuntu-latest
-    needs: preprocess        # blocks until preprocess job succeeds
+    needs: preprocess
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -107,7 +98,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # Download the features artifact produced by the preprocess job
+      # Pull down the features artifact from the preprocess job above.
       - name: Download features artifact
         uses: actions/download-artifact@v4
         with:
@@ -147,17 +138,16 @@ jobs:
           path: mlruns/
           retention-days: 30
 
-      # Print the metrics so they show up in the workflow run log
       - name: Print metrics
         run: cat models/metrics.json
 
   # Stage 3: Build Docker image and push to Docker Hub
   build-image:
     runs-on: ubuntu-latest
-    needs: train             # blocks until training succeeds
+    needs: train
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       # Download the trained model into the local models/ directory so the Dockerfile's COPY models/ ./models/ picks it up
@@ -189,5 +179,5 @@ jobs:
       # Argo CD reconciles (within ~3 min) it will re-pull :latest and Kubernetes will perform a rolling update.
       - name: Image pushed
         run: |
-          echo "✓ Image pushed: ${{ secrets.DOCKERHUB_USERNAME }}/nyctaxi-fare:latest"
-          echo "Argo CD will sync the deployment to the Kind cluster within 3 minutes."
+          echo "Image pushed: ${{ secrets.DOCKERHUB_USERNAME }}/nyctaxi-fare:latest"
+          echo "Argo CD will sync to the Kind cluster within 3 minutes."
