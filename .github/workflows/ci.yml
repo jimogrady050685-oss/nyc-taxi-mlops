@@ -13,7 +13,7 @@
 # pipeline runs without errors. 
 # If this fails, the merge is blocked.
 
-name: CI: Smoke Test
+name: "CI: Smoke Test"
 
 on:
   push:
