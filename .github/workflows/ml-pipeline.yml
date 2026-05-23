@@ -36,7 +36,13 @@ on:
         description: "How much of the dataset to use (0.0 to 1.0). Smaller is faster."
         default: "0.05"
         required: false
-
+  workflow_call:
+    inputs:
+      sample_fraction:
+        description: "Sample fraction (0.0-1.0). Smaller = faster runs."
+        default: "0.05"
+        required: false
+        type: string
 jobs:
 
   # Stage 1: Data Acquisition & Preprocessing 
